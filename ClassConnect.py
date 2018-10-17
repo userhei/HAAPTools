@@ -1,0 +1,258 @@
+# coding:utf-8
+
+from ftplib import FTP
+import paramiko
+import telnetlib
+import time
+
+
+class FTPConn(object):
+    def __init__(self, strIP, intPort, strUserName, strPasswd):
+        self._host = strIP
+        self._port = intPort
+        self._username = strUserName
+        self._password = strPasswd
+        self._Connection = None
+        self._connect()
+
+    def _connect(self):
+
+        ftp = FTP()
+        try:
+            ftp.connect(self._host, self._port)
+        except TimeoutError as E:
+            print('\nFTP Connect to {} Failed'.format(self._host))
+        try:
+            ftp.login(self._username, self._password)
+        except Exception as E:
+            print(E)
+        self._Connection = ftp
+
+    def GetFile(self, strRemoteFolder, strLocalFolder, strRemoteFileName,
+                strLocalFileName, FTPtype='bin', intBufSize=1024):
+        def _getfile():
+            ftp = self._Connection
+            # print(ftp.getwelcome())
+            ftp.cwd(strRemoteFolder)
+            objOpenLocalFile = open('{}/{}'.format(
+                strLocalFolder, strLocalFileName), "wb")
+            if FTPtype == 'bin':
+                ftp.retrbinary('RETR {}'.format(strRemoteFileName),
+                               objOpenLocalFile.write)
+            elif FTPtype == 'asc':
+                ftp.retrlines('RETR {}'.format(strRemoteFileName),
+                              objOpenLocalFile.write)
+            objOpenLocalFile.close()
+            ftp.close()
+
+        if self._Connection:
+            _getfile()
+        else:
+            self._connect()
+            try:
+                _getfile()
+            except Exception:
+                print('Get File Failed...')
+
+    def PutFile(self, strRemoteFolder, strLocalFolder, strRemoteFileName,
+                strLocalFileName, FTPtype='bin', intBufSize=1024):
+        def _putfile():
+            ftp = self._Connection
+            # print(ftp.getwelcome())
+            ftp.cwd(strRemoteFolder)
+            objOpenLocalFile = open('{}/{}'.format(
+                strLocalFolder, strLocalFileName, 'rb'))
+            if FTPtype == 'bin':
+                ftp.storbinary('STOR {}'.format(strRemoteFileName),
+                               objOpenLocalFile, intBufSize)
+            elif FTPtype == 'asc':
+                ftp.storlines('STOR {}'.format(
+                    strRemoteFileName), objOpenLocalFile)
+            ftp.set_debuglevel(0)
+            objOpenLocalFile.close()
+            ftp.close()
+
+        if self._Connection:
+            _putfile()
+        else:
+            self._connect()
+            try:
+                _putfile()
+            except Exception:
+                print('Put File Failed...')
+
+
+class SSHConn(object):
+    def __init__(self, host, port, username, password, timeout):
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._username = username
+        self._password = password
+        self._client = None
+        self._sftp = None
+        self._connect()
+
+    def _connect(self):
+        try:
+            objSSHClient = paramiko.SSHClient()
+            objSSHClient.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            objSSHClient.connect(self._host, port=self._port,
+                                 username=self._username,
+                                 password=self._password,
+                                 timeout=self._timeout)
+
+            self._client = objSSHClient
+
+        except Exception as E:
+            print('''
+    Connect to {} Failed in {} Seconds ...
+            '''.format(self._host, self._timeout))
+
+    def download(self, remotepath, localpath):
+        if self._sftp is None:
+            self._sftp = self._client.open_sftp()
+        self._sftp.get(remotepath, localpath)
+
+    def upload(self, localpath, remotepath):
+        if self._sftp is None:
+            self._sftp = self._client.open_sftp()
+        self._sftp.put(localpath, remotepath)
+
+    def ExecuteCommand(self, command):
+
+        def GetRusult():
+            stdin, stdout, stderr = self._client.exec_command(command)
+            data = stdout.read()
+            if len(data) > 0:
+                # print(data.strip())
+                return data
+            err = stderr.read()
+            if len(err) > 0:
+                print(err.strip())
+                return err
+
+        if self._client:
+            return GetRusult()
+        else:
+            self._connect()
+            if self._client:
+                return GetRusult()
+            else:
+                print('Command {} Execute Failed...'.format(command))
+                return None
+
+    def close(self):
+        if self._client:
+            self._client.close()
+
+
+class HAAPConn(object):
+    def __init__(self, strIP, intPort, strPasswd):
+        self._host = strIP
+        self._port = intPort
+        self._password = strPasswd
+        self._strLoginPrompt = 'Enter password'
+        self._strMainMenuPrompt = 'Coredump Menu'
+        self._strCLIPrompt = 'CLI>'
+        self._strCLIConflict = 'Another session owns the CLI'
+        self._Connection = None
+        self._connect()
+
+    def _connect(self):
+        try:
+            objTelnetConnect = telnetlib.Telnet(self._host, self._port)
+
+            objTelnetConnect.read_until(
+                self._strLoginPrompt.encode(encoding="utf-8"), timeout=2)
+            objTelnetConnect.write(self._password.encode(encoding="utf-8"))
+            objTelnetConnect.write(b'\r')
+            objTelnetConnect.read_until(
+                self._strMainMenuPrompt.encode(encoding="utf-8"), timeout=2)
+            objTelnetConnect.write(b'7')
+
+            strOutPut = objTelnetConnect.read_until(
+                self._strCLIPrompt.encode(encoding="utf-8"), timeout=2)
+            if int(strOutPut.find(self._strCLIPrompt.encode(
+                    encoding="utf-8"))) > 0:
+                self._Connection = objTelnetConnect
+                time.sleep(0.25)
+            elif int(strOutPut.find(self._strCLIConflict.encode(
+                    encoding="utf-8"))) > 0:
+                objTelnetConnect.write(b'y' + b'\r')
+                strOutPut = objTelnetConnect.read_until(
+                    self._strCLIPrompt.encode(encoding="utf-8"), timeout=2)
+                if int(strOutPut.find(self._strCLIPrompt.encode(
+                        encoding="utf-8"))) > 0:
+                    self._Connection = objTelnetConnect
+                    time.sleep(0.25)
+            #                 print('''
+            # ------Handle the CLI Succesfully For Engine: {}
+            #                     '''.format(self._strIP))
+
+        except Exception as E:
+            return None
+            print("------Goto CLI Failed For Engine: " + self._host)
+
+    def ExecuteCommand(self, *lstCommand):
+
+        CLI = self._strCLIPrompt.encode(encoding="utf-8")
+        CLI_Conflict = self._strCLIConflict.encode(encoding="utf-8")
+        if isinstance(lstCommand, str):
+            lstCommand = lstCommand.split('!@#$%^&*')
+
+        def GetResult():
+            strCommandResult = ''
+            for strCommand in lstCommand:
+                self._Connection.write(
+                    strCommand.encode(encoding="utf-8") + b'\r')
+                strResult = str(self._Connection.read_until(
+                    CLI, timeout=2).decode())
+                strCommandResult += strResult
+            return strCommandResult
+
+        def FindCLI():
+            self._Connection.write('\r')
+            strEnterOutput = self._Connection.read_until(CLI, timeout=1)
+
+            if CLI in strEnterOutput:
+                return GetResult()
+            elif 'HA-AP'.encode(encoding="utf-8") in strEnterOutput:
+                self._Connection.write('7')
+                str7Output = self._Connection.read_until(CLI, timeout=1)
+                if CLI in str7Output:
+                    return GetResult()
+                elif CLI_Conflict in str7Output:
+                    self._Connection.write('y')
+                    strConfirmCLI = self._Connection.read_until(CLI, timeout=1)
+                    if CLI in strConfirmCLI:
+                        return GetResult()
+
+        if self._Connection:
+            return FindCLI()
+        else:
+            self._connect()
+            if self._Connection:
+                return FindCLI()
+            else:
+                print('Connet Faild...')
+
+    def Close(self):
+        if self._Connection:
+            self._Connection.close()
+
+
+if __name__ == '__main__':
+    aa = HAAPConn('172.16.254.71', 23, '.com')
+    # print(aa._Connection)
+    print(aa.ExecuteCommand('conmgr status'))
+    print(1)
+    time.sleep(3)
+    print(aa.ExecuteCommand('conmgr status'))
+    print(2)
+    time.sleep(3)
+    print(aa.ExecuteCommand('conmgr status'))
+    print(3)
+    time.sleep(3)
+    print(aa.ExecuteCommand('conmgr status'))
+    print(4)
